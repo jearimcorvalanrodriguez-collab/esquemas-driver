@@ -332,83 +332,68 @@ export default function App() {
       )}
 
       {/* Header bar */}
-      <header className="bg-slate-900/80 backdrop-blur-md border-b border-slate-800 p-4 sticky top-0 z-50 flex items-center justify-between">
-        <div className="flex items-center gap-2">
-          <Truck className="text-emerald-500" size={24} />
-          <h1 className="text-lg font-black tracking-wider text-white">ESQUEMAS DRIVER</h1>
-        </div>
-        {currentUser && (
+      <header className="bg-slate-900/85 backdrop-blur-md border-b border-slate-800 py-2 px-3 sticky top-0 z-50 flex items-center justify-between gap-3">
+        {routeInfo ? (
+          <div className="flex-1 min-w-0 text-left">
+            {/* Fila 1: Token, Ruta y Estado */}
+            <div className="flex items-center gap-1.5 flex-wrap">
+              <span className="font-mono text-emerald-400 font-bold text-[10px] tracking-wider shrink-0">{routeInfo.token}</span>
+              <span className="text-slate-750 font-bold text-[10px] shrink-0">•</span>
+              <span className="font-black text-white text-xs truncate max-w-[130px] sm:max-w-xs">{routeInfo.title}</span>
+              <span className={`px-1.5 py-0.2 rounded-full text-[8px] font-black tracking-wide border shrink-0 ${
+                routeInfo.status === 'PENDING' || routeInfo.status === 'PENDIENTE' ? 'bg-slate-800 text-slate-400 border-slate-700' :
+                routeInfo.status === 'COMENZADO' ? 'bg-indigo-950/80 text-indigo-400 border-indigo-900/30' :
+                routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA' ? 'bg-blue-950/80 text-blue-400 border-blue-900/30 animate-pulse' :
+                routeInfo.status === 'LLEGADO' ? 'bg-emerald-950/80 text-emerald-400 border-emerald-900/30' :
+                routeInfo.status === 'FINALIZADO' ? 'bg-slate-900/80 text-slate-500 border-slate-850' :
+                'bg-slate-800 text-slate-400'
+              }`}>
+                {routeInfo.status || 'PENDIENTE'}
+              </span>
+            </div>
+            
+            {/* Fila 2: Conductor, Fecha y Hora */}
+            <div className="text-[9px] text-slate-400 flex flex-wrap items-center gap-x-2 gap-y-0.5 mt-0.5 leading-none">
+              <div className="truncate max-w-[120px]">
+                <span className="text-slate-500 font-bold">Cond:</span>{' '}
+                <span className="text-slate-200 font-bold">{routeInfo.conductor ? routeInfo.conductor.split(' (')[0] : 'Sin asignar'}</span>
+              </div>
+              <div className="text-slate-700 font-bold">•</div>
+              <div>
+                <span className="text-slate-500 font-bold">Fecha:</span>{' '}
+                <span className="text-slate-300 font-medium">{formatDateString(routeInfo.date)}</span>
+              </div>
+              <div className="text-slate-700 font-bold">•</div>
+              <div>
+                <span className="text-slate-500 font-bold">Llegada:</span>{' '}
+                <span className="text-slate-300 font-medium">{routeInfo.time}</span>
+              </div>
+            </div>
+
+            {/* Fila 3: Destino (ocupa todo el ancho, truncando al final) */}
+            <div className="text-[9px] text-slate-400 truncate mt-0.5 leading-none flex items-center w-full min-w-0">
+              <span className="text-slate-500 font-bold shrink-0 mr-1">Dest:</span>
+              <span className="text-slate-300 truncate flex-1 min-w-0" title={routeInfo.dest}>{routeInfo.dest}</span>
+            </div>
+          </div>
+        ) : (
           <div className="flex items-center gap-2">
-            <Button variant="ghost" onClick={handleRefresh} disabled={loading} title="Actualizar Ruta" className="p-2 border border-slate-800 rounded-lg">
-              <RefreshCw size={16} className={loading ? 'animate-spin text-emerald-500' : 'text-slate-400'} />
+            <Truck className="text-emerald-500" size={24} />
+            <h1 className="text-lg font-black tracking-wider text-white">ESQUEMAS DRIVER</h1>
+          </div>
+        )}
+        
+        {currentUser && (
+          <div className="flex items-center gap-1.5 shrink-0">
+            <Button variant="ghost" onClick={handleRefresh} disabled={loading} title="Actualizar Ruta" className="p-1.5 border border-slate-800 rounded-lg">
+              <RefreshCw size={14} className={loading ? 'animate-spin text-emerald-500' : 'text-slate-400'} />
             </Button>
-            <Button variant="ghost" onClick={handleLogout} className="p-2 border border-slate-800 rounded-lg text-red-400" title="Cerrar Sesión">
-              <LogOut size={16} />
+            <Button variant="ghost" onClick={handleLogout} className="p-1.5 border border-slate-800 rounded-lg text-red-400" title="Cerrar Sesión">
+              <LogOut size={14} />
             </Button>
           </div>
         )}
       </header>
-
-      {routeInfo && (
-        <div className="max-w-lg w-full mx-auto px-4 mt-3 animate-fade-in">
-          {/* 1. Cabecera Ultra-Compacta (Ruta, Token, Conductor, Estado y Horarios) */}
-          <Card className="py-2.5 px-3 border-slate-850 bg-slate-900/60 text-xs">
-            <div className="flex flex-col gap-1.5">
-              {/* Primera Fila: Título de la Ruta y Estado */}
-              <div className="flex justify-between items-center gap-2">
-                <div className="truncate flex-1 min-w-0">
-                  <span className="text-[9px] text-emerald-500 font-extrabold uppercase tracking-wider mr-1">[Ruta]</span>
-                  <span className="font-black text-white text-sm tracking-wide">{routeInfo.title}</span>
-                </div>
-                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black tracking-wide border shrink-0 ${
-                  routeInfo.status === 'PENDING' || routeInfo.status === 'PENDIENTE' ? 'bg-slate-800 text-slate-400 border-slate-700' :
-                  routeInfo.status === 'COMENZADO' ? 'bg-indigo-950/80 text-indigo-400 border-indigo-900/30' :
-                  routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA' ? 'bg-blue-950/80 text-blue-400 border-blue-900/30 animate-pulse' :
-                  routeInfo.status === 'LLEGADO' ? 'bg-emerald-950/80 text-emerald-400 border-emerald-900/30' :
-                  routeInfo.status === 'FINALIZADO' ? 'bg-slate-900/80 text-slate-500 border-slate-850' :
-                  'bg-slate-800 text-slate-400'
-                }`}>
-                  {routeInfo.status || 'PENDIENTE'}
-                </span>
-              </div>
-
-              {/* Segunda Fila: Datos Principales (Token y Conductor) */}
-              <div className="flex items-center gap-3 text-[10px] text-slate-400 border-t border-slate-800/60 pt-1.5">
-                <div>
-                  <span className="text-slate-500 font-bold uppercase mr-1">Token:</span>
-                  <span className="font-mono text-emerald-400 font-bold tracking-wider">{routeInfo.token}</span>
-                </div>
-                <div className="w-1 h-1 rounded-full bg-slate-800"></div>
-                <div className="truncate flex-1 min-w-0">
-                  <span className="text-slate-500 font-bold uppercase mr-1">Conductor:</span>
-                  <span className="text-slate-200 font-bold">
-                    {routeInfo.conductor ? routeInfo.conductor.split(' (')[0] : 'Sin asignar'}
-                  </span>
-                </div>
-              </div>
-
-              {/* Tercera Fila: Fecha y Hora de Llegada / Destino */}
-              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center text-[9px] text-slate-500 border-t border-slate-850/20 pt-1 gap-y-1">
-                <div className="flex flex-wrap gap-2 items-center">
-                  <div>
-                    <span className="font-bold uppercase mr-1">Fecha:</span>
-                    <span className="text-slate-400 font-medium">{formatDateString(routeInfo.date)}</span>
-                  </div>
-                  <div className="w-0.5 h-2.5 bg-slate-800"></div>
-                  <div>
-                    <span className="font-bold uppercase mr-1">Hora Llegada:</span>
-                    <span className="text-slate-400 font-medium">{routeInfo.time}</span>
-                  </div>
-                </div>
-                <div className="truncate flex-1 min-w-0 text-left sm:text-right">
-                  <span className="font-bold uppercase mr-1">Destino:</span>
-                  <span className="text-slate-400 font-medium truncate inline-block w-full sm:w-auto" title={routeInfo.dest}>{routeInfo.dest}</span>
-                </div>
-              </div>
-            </div>
-          </Card>
-        </div>
-      )}
 
       {/* Main Container */}
       <main className="flex-1 max-w-lg w-full mx-auto p-4 flex flex-col justify-center">
