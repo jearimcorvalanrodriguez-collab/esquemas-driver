@@ -143,6 +143,7 @@ export default function App() {
   // Real-time navigation GPS states
   const [currentLocation, setCurrentLocation] = useState(null);
   const [mapOrigin, setMapOrigin] = useState('');
+  const [lastSyncTime, setLastSyncTime] = useState(0);
 
   const showToast = (message) => {
     setToastMessage(message);
@@ -175,6 +176,30 @@ export default function App() {
 
     return () => navigator.geolocation.clearWatch(watchId);
   }, [routeInfo]);
+
+  // Synchronize GPS location to backend every 30 seconds
+  useEffect(() => {
+    if (!routeInfo || !routeInfo.token || !currentLocation) return;
+    if (!['COMENZADO', 'EN VIAJE', 'LLEGADO'].includes(routeInfo.status)) return;
+    
+    const now = Date.now();
+    if (now - lastSyncTime > 30000) {
+      setLastSyncTime(now);
+      apiFetch('updateDriverGPS', {
+        token: routeInfo.token,
+        lat: currentLocation.lat,
+        lng: currentLocation.lng,
+        speed: currentLocation.speed,
+        accuracy: currentLocation.accuracy
+      }).then(res => {
+        if (res.status === 'success') {
+          console.log("GPS automatic sync successful");
+        }
+      }).catch(err => {
+        console.error("Failed to sync GPS automatically:", err);
+      });
+    }
+  }, [currentLocation, routeInfo, lastSyncTime]);
 
   // Synchronize map origin when routeInfo changes
   useEffect(() => {
@@ -290,6 +315,16 @@ export default function App() {
       if (res.status === 'success') {
         setRouteInfo(prev => ({ ...prev, status: newStatus }));
         showToast(`Estado actualizado a ${newStatus}`);
+        
+        if (currentLocation) {
+          apiFetch('updateDriverGPS', {
+            token: routeInfo.token,
+            lat: currentLocation.lat,
+            lng: currentLocation.lng,
+            speed: currentLocation.speed,
+            accuracy: currentLocation.accuracy
+          }).catch(e => console.error("Error updating GPS on status change:", e));
+        }
         
         let alertText = '';
         const gpsLink = currentLocation 
