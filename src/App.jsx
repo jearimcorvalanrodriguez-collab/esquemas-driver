@@ -414,6 +414,15 @@ export default function App() {
                 <span className="text-slate-500 font-bold">Llegada:</span>{' '}
                 <span className="text-slate-300 font-medium">{formatTimeString(routeInfo.time)}</span>
               </div>
+              {routeInfo.status === 'FINALIZADO' && routeInfo.endTime && (
+                <>
+                  <div className="text-slate-750 font-bold">•</div>
+                  <div>
+                    <span className="text-emerald-500 font-bold">Fin:</span>{' '}
+                    <span className="text-emerald-400 font-bold">{routeInfo.endTime}</span>
+                  </div>
+                </>
+              )}
             </div>
 
             {/* Subfila 2.3: Destino (ocupa todo el ancho, truncando al final del contenedor) */}
