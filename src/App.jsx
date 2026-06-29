@@ -82,6 +82,32 @@ const apiFetch = async (action, payload = {}) => {
   return response.json();
 };
 
+// --- TOKEN SANITIZER HELPER ---
+const sanitizeTokenInput = (val) => {
+  if (!val) return '';
+  // Remove all spaces and non-alphanumeric/non-hyphen characters
+  let cleaned = val.replace(/[^A-Za-z0-9-]/g, '').toUpperCase();
+  // If they typed TR followed by digits directly without hyphen, e.g. TR4802 -> TR-4802
+  if (/^TR\d+$/.test(cleaned)) {
+    cleaned = 'TR-' + cleaned.slice(2);
+  }
+  return cleaned;
+};
+
+// --- DATE FORMATTER HELPER ---
+const formatDateString = (dateStr) => {
+  if (!dateStr) return '';
+  let str = String(dateStr).trim();
+  let clean = str.replace(/-/g, '/');
+  const parts = clean.split('/');
+  if (parts.length === 3) {
+    if (parts[0].length === 4) {
+      return `${parts[2]}/${parts[1]}/${parts[0]}`;
+    }
+  }
+  return clean;
+};
+
 export default function App() {
   const [driverToken, setDriverToken] = useState('');
   const [currentUser, setCurrentUser] = useState(null);
@@ -90,9 +116,56 @@ export default function App() {
   const [error, setError] = useState('');
   const [toastMessage, setToastMessage] = useState(null);
 
+  // Real-time navigation GPS states
+  const [currentLocation, setCurrentLocation] = useState(null);
+  const [mapOrigin, setMapOrigin] = useState('');
+
   const showToast = (message) => {
     setToastMessage(message);
     setTimeout(() => setToastMessage(null), 3000);
+  };
+
+  // Watch driver's real-time position
+  useEffect(() => {
+    if (!routeInfo) return;
+    if (!navigator.geolocation) {
+      console.warn("Este navegador no soporta geolocalización.");
+      return;
+    }
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const speed = position.coords.speed ? Math.round(position.coords.speed * 3.6) : 0;
+        setCurrentLocation({
+          lat: position.coords.latitude,
+          lng: position.coords.longitude,
+          speed,
+          accuracy: Math.round(position.coords.accuracy)
+        });
+      },
+      (err) => {
+        console.error("Error al obtener GPS: ", err);
+      },
+      { enableHighAccuracy: true, timeout: 15000, maximumAge: 0 }
+    );
+
+    return () => navigator.geolocation.clearWatch(watchId);
+  }, [routeInfo]);
+
+  // Synchronize map origin when routeInfo changes
+  useEffect(() => {
+    if (routeInfo && routeInfo.origin) {
+      setMapOrigin(routeInfo.origin);
+    }
+  }, [routeInfo]);
+
+  const handleRecalculateFromGPS = () => {
+    if (currentLocation) {
+      setMapOrigin(`${currentLocation.lat},${currentLocation.lng}`);
+      showToast("Ruta recalculada desde tu ubicación GPS actual");
+    } else {
+      showToast("Esperando señal GPS...");
+    }
   };
 
   // Auto-login from LocalStorage or URL Token on Mount
@@ -106,20 +179,21 @@ export default function App() {
       setLoading(true);
       setError('');
       try {
+        const sanitized = sanitizeTokenInput(tokenVal);
         if (acceptOnly) {
           // Accept route first
-          const acceptRes = await apiFetch('aceptarRuta', { token: tokenVal });
+          const acceptRes = await apiFetch('aceptarRuta', { token: sanitized });
           if (acceptRes.status === 'success') {
-            showToast(`¡Ruta ${tokenVal} Aceptada con Éxito!`);
+            showToast(`¡Ruta ${sanitized} Aceptada con Éxito!`);
           }
         }
         
         // Iniciar sesión
-        const res = await apiFetch('loginConductor', { token: tokenVal });
+        const res = await apiFetch('loginConductor', { token: sanitized });
         if (res.status === 'success') {
           setCurrentUser(res.user);
           setRouteInfo(res.user.routeInfo || {});
-          window.localStorage.setItem('esquemas_driver_token', tokenVal);
+          window.localStorage.setItem('esquemas_driver_token', sanitized);
           // Clean query string from browser history
           window.history.replaceState({}, document.title, window.location.pathname);
         } else {
@@ -133,19 +207,19 @@ export default function App() {
     };
 
     if (urlToken) {
-      handleAutoInit(urlToken.trim().toUpperCase());
+      handleAutoInit(urlToken);
     } else if (savedToken) {
-      handleAutoInit(savedToken.trim().toUpperCase());
+      handleAutoInit(savedToken);
     }
   }, []);
 
   const handleLogin = async (e) => {
     e.preventDefault();
-    if (!driverToken.trim()) return;
+    const formattedToken = sanitizeTokenInput(driverToken);
+    if (!formattedToken) return;
     setError('');
     setLoading(true);
     try {
-      const formattedToken = driverToken.trim().toUpperCase();
       const res = await apiFetch('loginConductor', { token: formattedToken });
       if (res.status === 'success') {
         setCurrentUser(res.user);
@@ -183,20 +257,29 @@ export default function App() {
     if (!routeInfo || !routeInfo.token) return;
     setLoading(true);
     try {
-      const res = await apiFetch('updateTransportStatus', { token: routeInfo.token, newStatus });
+      const coordsVal = currentLocation ? `${currentLocation.lat},${currentLocation.lng}` : null;
+      const res = await apiFetch('updateTransportStatus', { 
+        token: routeInfo.token, 
+        newStatus,
+        coords: coordsVal 
+      });
       if (res.status === 'success') {
         setRouteInfo(prev => ({ ...prev, status: newStatus }));
         showToast(`Estado actualizado a ${newStatus}`);
         
         let alertText = '';
+        const gpsLink = currentLocation 
+          ? `\n📍 Ubicación GPS: https://www.google.com/maps/search/?api=1&query=${currentLocation.lat},${currentLocation.lng}` 
+          : '';
+
         if (newStatus === 'COMENZADO') {
-          alertText = `🚐 [Logística] El conductor ha comenzado la preparación/ruta "${routeInfo.title}" (Token: ${routeInfo.token}).`;
+          alertText = `🚐 [Logística] El conductor ha comenzado la preparación/ruta "${routeInfo.title}" (Token: ${routeInfo.token}).${gpsLink}`;
         } else if (newStatus === 'EN VIAJE') {
-          alertText = `🚐 [Logística] El conductor ha iniciado el viaje para la ruta "${routeInfo.title}". ¡En camino!`;
+          alertText = `🚐 [Logística] El conductor ha iniciado el viaje para la ruta "${routeInfo.title}". ¡En camino!${gpsLink}`;
         } else if (newStatus === 'LLEGADO') {
-          alertText = `📢 [AVISO LLEGADA] 🚐 ¡El conductor de la ruta "${routeInfo.title}" ha LLEGADO al punto de destino/espera!`;
+          alertText = `📢 [AVISO LLEGADA] 🚐 ¡El conductor de la ruta "${routeInfo.title}" ha LLEGADO al punto de destino/espera!${gpsLink}`;
         } else if (newStatus === 'FINALIZADO') {
-          alertText = `🚐 [Logística] La ruta de transporte "${routeInfo.title}" ha finalizado con éxito.`;
+          alertText = `🚐 [Logística] La ruta de transporte "${routeInfo.title}" ha finalizado con éxito.${gpsLink}`;
         }
 
         if (alertText && routeInfo.proyectoId) {
@@ -222,11 +305,18 @@ export default function App() {
   };
 
   const handleLogout = () => {
-    window.localStorage.removeItem('esquemas_driver_token');
-    setCurrentUser(null);
-    setRouteInfo(null);
-    setDriverToken('');
-    setError('');
+    const activeToken = routeInfo ? routeInfo.token : window.localStorage.getItem('esquemas_driver_token') || '';
+    const confirmLogout = window.confirm(
+      `⚠️ ¿Estás seguro de que deseas salir?\n\nAl cerrar la sesión perderás el acceso a esta pantalla de viaje. Para volver a ingresar deberás ingresar el Token de la Ruta (${activeToken}). Asegúrate de tenerlo copiado o guardado antes de continuar.`
+    );
+    
+    if (confirmLogout) {
+      window.localStorage.removeItem('esquemas_driver_token');
+      setCurrentUser(null);
+      setRouteInfo(null);
+      setDriverToken('');
+      setError('');
+    }
   };
 
   // UI rendering
@@ -258,6 +348,67 @@ export default function App() {
           </div>
         )}
       </header>
+
+      {routeInfo && (
+        <div className="max-w-lg w-full mx-auto px-4 mt-3 animate-fade-in">
+          {/* 1. Cabecera Ultra-Compacta (Ruta, Token, Conductor, Estado y Horarios) */}
+          <Card className="py-2.5 px-3 border-slate-850 bg-slate-900/60 text-xs">
+            <div className="flex flex-col gap-1.5">
+              {/* Primera Fila: Título de la Ruta y Estado */}
+              <div className="flex justify-between items-center gap-2">
+                <div className="truncate flex-1 min-w-0">
+                  <span className="text-[9px] text-emerald-500 font-extrabold uppercase tracking-wider mr-1">[Ruta]</span>
+                  <span className="font-black text-white text-sm tracking-wide">{routeInfo.title}</span>
+                </div>
+                <span className={`px-2 py-0.5 rounded-full text-[9px] font-black tracking-wide border shrink-0 ${
+                  routeInfo.status === 'PENDING' || routeInfo.status === 'PENDIENTE' ? 'bg-slate-800 text-slate-400 border-slate-700' :
+                  routeInfo.status === 'COMENZADO' ? 'bg-indigo-950/80 text-indigo-400 border-indigo-900/30' :
+                  routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA' ? 'bg-blue-950/80 text-blue-400 border-blue-900/30 animate-pulse' :
+                  routeInfo.status === 'LLEGADO' ? 'bg-emerald-950/80 text-emerald-400 border-emerald-900/30' :
+                  routeInfo.status === 'FINALIZADO' ? 'bg-slate-900/80 text-slate-500 border-slate-850' :
+                  'bg-slate-800 text-slate-400'
+                }`}>
+                  {routeInfo.status || 'PENDIENTE'}
+                </span>
+              </div>
+
+              {/* Segunda Fila: Datos Principales (Token y Conductor) */}
+              <div className="flex items-center gap-3 text-[10px] text-slate-400 border-t border-slate-800/60 pt-1.5">
+                <div>
+                  <span className="text-slate-500 font-bold uppercase mr-1">Token:</span>
+                  <span className="font-mono text-emerald-400 font-bold tracking-wider">{routeInfo.token}</span>
+                </div>
+                <div className="w-1 h-1 rounded-full bg-slate-800"></div>
+                <div className="truncate flex-1 min-w-0">
+                  <span className="text-slate-500 font-bold uppercase mr-1">Conductor:</span>
+                  <span className="text-slate-200 font-bold">
+                    {routeInfo.conductor ? routeInfo.conductor.split(' (')[0] : 'Sin asignar'}
+                  </span>
+                </div>
+              </div>
+
+              {/* Tercera Fila: Fecha y Hora de Llegada / Destino */}
+              <div className="flex flex-col sm:flex-row sm:justify-between sm:items-center text-[9px] text-slate-500 border-t border-slate-850/20 pt-1 gap-y-1">
+                <div className="flex flex-wrap gap-2 items-center">
+                  <div>
+                    <span className="font-bold uppercase mr-1">Fecha:</span>
+                    <span className="text-slate-400 font-medium">{formatDateString(routeInfo.date)}</span>
+                  </div>
+                  <div className="w-0.5 h-2.5 bg-slate-800"></div>
+                  <div>
+                    <span className="font-bold uppercase mr-1">Hora Llegada:</span>
+                    <span className="text-slate-400 font-medium">{routeInfo.time}</span>
+                  </div>
+                </div>
+                <div className="truncate flex-1 min-w-0 text-left sm:text-right">
+                  <span className="font-bold uppercase mr-1">Destino:</span>
+                  <span className="text-slate-400 font-medium truncate inline-block w-full sm:w-auto" title={routeInfo.dest}>{routeInfo.dest}</span>
+                </div>
+              </div>
+            </div>
+          </Card>
+        </div>
+      )}
 
       {/* Main Container */}
       <main className="flex-1 max-w-lg w-full mx-auto p-4 flex flex-col justify-center">
@@ -291,6 +442,7 @@ export default function App() {
                   type="text" 
                   value={driverToken} 
                   onChange={e => setDriverToken(e.target.value.toUpperCase())} 
+                  onBlur={e => setDriverToken(sanitizeTokenInput(e.target.value))}
                   className="w-full bg-slate-950 border border-slate-800 focus:border-emerald-500 rounded-lg p-3 text-white text-center font-mono text-xl tracking-widest outline-none transition-colors" 
                   placeholder="TR-XXXX" 
                   required 
@@ -305,39 +457,252 @@ export default function App() {
 
         {routeInfo && (
           <div className="space-y-4 animate-fade-in w-full">
-            <Card className="p-5 border-emerald-500/20 bg-gradient-to-b from-slate-900 to-slate-950">
-              <div className="flex justify-between items-start mb-3 border-b border-slate-800 pb-3">
-                <div>
-                  <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest">Ruta Asignada</span>
-                  <h2 className="text-lg font-black text-white mt-0.5 leading-snug">{routeInfo.title}</h2>
+            
+            {/* 2. Mapa de Navegación Integrado con Rastreo GPS */}
+            <Card className="overflow-hidden border-slate-800 bg-slate-900/50">
+              <div className="p-3 bg-slate-900 border-b border-slate-850 flex items-center justify-between">
+                <div className="flex items-center gap-2">
+                  <MapIcon className="text-emerald-500 animate-pulse" size={18} />
+                  <span className="text-xs font-black uppercase tracking-wider text-white">Navegación de Ruta en Vivo</span>
                 </div>
-                <span className={`inline-block px-2.5 py-1 rounded-full text-xs font-black tracking-wide border ${
-                  routeInfo.status === 'PENDING' || routeInfo.status === 'PENDIENTE' ? 'bg-slate-800/80 text-slate-400 border-slate-700' :
-                  routeInfo.status === 'COMENZADO' ? 'bg-indigo-950/80 text-indigo-400 border-indigo-900/30' :
-                  routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA' ? 'bg-blue-950/80 text-blue-400 border-blue-900/30' :
-                  routeInfo.status === 'LLEGADO' ? 'bg-emerald-950/80 text-emerald-400 border-emerald-900/30' :
-                  routeInfo.status === 'FINALIZADO' ? 'bg-slate-900/80 text-slate-500 border-slate-850' :
-                  'bg-slate-800 text-slate-400'
-                }`}>
-                  {routeInfo.status || 'PENDIENTE'}
+                <span className="text-[9px] bg-blue-500/10 text-blue-400 border border-blue-500/20 px-2 py-0.5 rounded-full font-bold uppercase">
+                  Ruta en Vivo
                 </span>
               </div>
 
-              <div className="grid grid-cols-2 gap-2 mb-4 text-xs">
-                <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-left">
-                  <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider block mb-0.5">Token</span>
-                  <span className="font-mono text-emerald-400 font-bold tracking-widest">{routeInfo.token}</span>
+              {/* GPS Telemetry Dashboard */}
+              <div className="bg-slate-950 px-3 py-2 border-b border-slate-850 flex items-center justify-between text-[11px]">
+                <div className="flex items-center gap-2">
+                  <div className={`w-2 h-2 rounded-full ${currentLocation ? 'bg-emerald-500 animate-ping' : 'bg-amber-500 animate-pulse'}`}></div>
+                  <span className="font-semibold text-slate-400">
+                    {currentLocation ? `GPS (±${currentLocation.accuracy}m)` : 'GPS buscando...'}
+                  </span>
                 </div>
-                <div className="bg-slate-950 p-2.5 rounded-lg border border-slate-800 text-left">
-                  <span className="text-[9px] text-slate-500 font-bold uppercase tracking-wider block mb-0.5">Conductor</span>
-                  <span className="text-white font-bold truncate block">{routeInfo.conductor || 'Sin asignar'}</span>
+                
+                <div className="flex items-center gap-3">
+                  {currentLocation && (
+                    <span className="font-mono text-emerald-400 font-bold bg-emerald-950/40 px-1.5 py-0.5 rounded border border-emerald-900/30">
+                      ⚡ {currentLocation.speed} km/h
+                    </span>
+                  )}
+                  {currentLocation && (
+                    <button
+                      onClick={handleRecalculateFromGPS}
+                      className="bg-slate-800 hover:bg-slate-700 text-emerald-400 font-extrabold px-2 py-0.5 rounded border border-slate-750 text-[10px] flex items-center gap-1 transition-all cursor-pointer active:scale-95 shrink-0"
+                    >
+                      <Navigation size={10} className="rotate-45" /> Recalcular
+                    </button>
+                  )}
                 </div>
               </div>
 
-              <div className="space-y-4 text-sm text-slate-300 text-left">
-                <p className="flex items-center gap-2 text-xs text-slate-400"><Calendar size={14} className="text-emerald-500 shrink-0"/> {routeInfo.date} a las {routeInfo.time}</p>
+              <div className="relative w-full aspect-video sm:h-[350px] bg-slate-950">
+                <iframe
+                  title="Navegación de Ruta"
+                  width="100%"
+                  height="100%"
+                  frameBorder="0"
+                  style={{ border: 0, minHeight: '300px' }}
+                  src={`https://maps.google.com/maps?saddr=${encodeURIComponent(mapOrigin || routeInfo.origin)}&daddr=${[...(routeInfo.paradas || []), routeInfo.dest].map(stop => encodeURIComponent(stop)).join('+to:')}&output=embed`}
+                  allowFullScreen
+                  className="w-full h-full"
+                ></iframe>
+              </div>
+              
+              {/* Botones de Google Maps y Waze directamente después del mapa */}
+              <div className="p-2.5 bg-slate-900/30 flex justify-between items-center gap-2 border-t border-slate-850">
+                <span className="text-[10px] text-slate-500 font-bold uppercase tracking-wider">
+                  Indicaciones por voz:
+                </span>
+                <div className="flex gap-2">
+                  <a 
+                    href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(routeInfo.origin)}&destination=${encodeURIComponent(routeInfo.dest)}&waypoints=${encodeURIComponent((routeInfo.paradas || []).join('|'))}`} 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="text-[10px] bg-slate-850 hover:bg-slate-800 text-slate-300 px-2.5 py-1.5 rounded-lg flex items-center gap-1 border border-slate-750 transition-colors"
+                  >
+                    Google Maps
+                  </a>
+                  <a 
+                    href={`https://waze.com/ul?q=${encodeURIComponent(routeInfo.dest)}&navigate=yes`} 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="text-[10px] bg-slate-850 hover:bg-slate-800 text-blue-400 px-2.5 py-1.5 rounded-lg flex items-center gap-1 border border-slate-750 transition-colors"
+                  >
+                    Waze
+                  </a>
+                </div>
+              </div>
+            </Card>
 
-                {/* Timeline map paths */}
+            {/* 3. Acciones de Actualización de Estado (Botones) */}
+            <Card className="p-5 border-slate-850 bg-slate-900/50">
+              <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest block text-center mb-4">Actualizar Estado de Viaje</span>
+              
+              <div className="flex flex-col gap-3.5">
+                {/* 1. Iniciar Viaje */}
+                <button 
+                  onClick={() => updateStatus('EN VIAJE')}
+                  disabled={loading || routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA' || routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO'}
+                  className={`w-full text-left p-4 rounded-xl border flex items-center justify-between transition-all duration-200 
+                    ${(routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA' || routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO') 
+                      ? 'bg-slate-950/30 text-slate-500 border-slate-900 opacity-40 cursor-not-allowed scale-100' 
+                      : 'bg-blue-600/10 hover:bg-blue-600/15 border-blue-500/20 active:scale-[0.98] cursor-pointer text-blue-400'
+                    }
+                    ${(!routeInfo.status || routeInfo.status === 'PENDIENTE' || routeInfo.status === 'PENDING' || routeInfo.status === 'COMENZADO') && !loading
+                      ? 'ring-2 ring-blue-500/40 animate-pulse-slow bg-blue-600 text-slate-950 font-black hover:bg-blue-500 border-blue-400' 
+                      : ''
+                    }`}
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-sm shrink-0
+                      ${(!routeInfo.status || routeInfo.status === 'PENDIENTE' || routeInfo.status === 'PENDING' || routeInfo.status === 'COMENZADO') && !loading
+                        ? 'bg-slate-950 text-blue-400' 
+                        : 'bg-slate-850 text-slate-400'
+                      }`}
+                    >
+                      1
+                    </div>
+                    <div>
+                      <h3 className={`font-black text-sm md:text-base tracking-wide uppercase leading-tight
+                        ${(!routeInfo.status || routeInfo.status === 'PENDIENTE' || routeInfo.status === 'PENDING' || routeInfo.status === 'COMENZADO') && !loading
+                          ? 'text-slate-950' 
+                          : (routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA' || routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO' ? 'text-slate-500' : 'text-blue-400')
+                        }`}
+                      >
+                        Iniciar Viaje
+                      </h3>
+                      <p className={`text-[10px] font-bold uppercase tracking-wider mt-0.5
+                        ${(!routeInfo.status || routeInfo.status === 'PENDIENTE' || routeInfo.status === 'PENDING' || routeInfo.status === 'COMENZADO') && !loading
+                          ? 'text-slate-950/70' 
+                          : 'text-slate-500'
+                        }`}
+                      >
+                        {(!routeInfo.status || routeInfo.status === 'PENDIENTE' || routeInfo.status === 'PENDING' || routeInfo.status === 'COMENZADO') ? 'Siguiente paso recomendado' : 'Comenzado'}
+                      </p>
+                    </div>
+                  </div>
+                  <div className={`p-2 rounded-lg shrink-0
+                    ${(!routeInfo.status || routeInfo.status === 'PENDIENTE' || routeInfo.status === 'PENDING' || routeInfo.status === 'COMENZADO') && !loading
+                      ? 'bg-slate-950/10 text-slate-950' 
+                      : 'bg-slate-850/50 text-slate-400'
+                    }`}
+                  >
+                    <Truck size={20} />
+                  </div>
+                </button>
+
+                {/* 2. Llegué a Destino */}
+                <button 
+                  onClick={() => updateStatus('LLEGADO')}
+                  disabled={loading || routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO'}
+                  className={`w-full text-left p-4 rounded-xl border flex items-center justify-between transition-all duration-200 
+                    ${(routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO') 
+                      ? 'bg-slate-950/30 text-slate-500 border-slate-900 opacity-40 cursor-not-allowed scale-100' 
+                      : 'bg-emerald-600/10 hover:bg-emerald-600/15 border-emerald-500/20 active:scale-[0.98] cursor-pointer text-emerald-400'
+                    }
+                    ${(routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA') && !loading
+                      ? 'ring-2 ring-emerald-500/40 animate-pulse-slow bg-emerald-600 text-slate-950 font-black hover:bg-emerald-500 border-emerald-400' 
+                      : ''
+                    }`}
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-sm shrink-0
+                      ${(routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA') && !loading
+                        ? 'bg-slate-950 text-emerald-400' 
+                        : 'bg-slate-850 text-slate-400'
+                      }`}
+                    >
+                      2
+                    </div>
+                    <div>
+                      <h3 className={`font-black text-sm md:text-base tracking-wide uppercase leading-tight
+                        ${(routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA') && !loading
+                          ? 'text-slate-950' 
+                          : (routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO' ? 'text-slate-500' : 'text-emerald-400')
+                        }`}
+                      >
+                        ¡Llegué a Destino!
+                      </h3>
+                      <p className={`text-[10px] font-bold uppercase tracking-wider mt-0.5
+                        ${(routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA') && !loading
+                          ? 'text-slate-950/70' 
+                          : 'text-slate-500'
+                        }`}
+                      >
+                        {(routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA') ? 'Siguiente paso recomendado' : (routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO' ? 'Llegado' : 'Pendiente de inicio')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className={`p-2 rounded-lg shrink-0
+                    ${(routeInfo.status === 'EN VIAJE' || routeInfo.status === 'EN RUTA') && !loading
+                      ? 'bg-slate-950/10 text-slate-950' 
+                      : 'bg-slate-850/50 text-slate-400'
+                    }`}
+                  >
+                    <MapPin size={20} />
+                  </div>
+                </button>
+
+                {/* 3. Finalizar Ruta */}
+                <button 
+                  onClick={() => updateStatus('FINALIZADO')}
+                  disabled={loading || routeInfo.status === 'FINALIZADO'}
+                  className={`w-full text-left p-4 rounded-xl border flex items-center justify-between transition-all duration-200 
+                    ${(routeInfo.status === 'FINALIZADO') 
+                      ? 'bg-slate-950/30 text-slate-500 border-slate-900 opacity-40 cursor-not-allowed scale-100' 
+                      : 'bg-red-600/10 hover:bg-red-600/15 border-red-500/20 active:scale-[0.98] cursor-pointer text-red-400'
+                    }
+                    ${routeInfo.status === 'LLEGADO' && !loading
+                      ? 'ring-2 ring-red-500/40 animate-pulse-slow bg-red-600 text-slate-950 font-black hover:bg-red-500 border-red-400' 
+                      : ''
+                    }`}
+                >
+                  <div className="flex items-center gap-3.5">
+                    <div className={`w-8 h-8 rounded-full flex items-center justify-center font-black text-sm shrink-0
+                      ${routeInfo.status === 'LLEGADO' && !loading
+                        ? 'bg-slate-950 text-red-400' 
+                        : 'bg-slate-850 text-slate-400'
+                      }`}
+                    >
+                      3
+                    </div>
+                    <div>
+                      <h3 className={`font-black text-sm md:text-base tracking-wide uppercase leading-tight
+                        ${routeInfo.status === 'LLEGADO' && !loading
+                          ? 'text-slate-950' 
+                          : (routeInfo.status === 'FINALIZADO' ? 'text-slate-500' : 'text-red-400')
+                        }`}
+                      >
+                        Finalizar Ruta
+                      </h3>
+                      <p className={`text-[10px] font-bold uppercase tracking-wider mt-0.5
+                        ${routeInfo.status === 'LLEGADO' && !loading
+                          ? 'text-slate-950/70' 
+                          : 'text-slate-500'
+                        }`}
+                      >
+                        {routeInfo.status === 'LLEGADO' ? 'Siguiente paso recomendado' : (routeInfo.status === 'FINALIZADO' ? 'Ruta completada' : 'Pendiente de llegada')}
+                      </p>
+                    </div>
+                  </div>
+                  <div className={`p-2 rounded-lg shrink-0
+                    ${routeInfo.status === 'LLEGADO' && !loading
+                      ? 'bg-slate-950/10 text-slate-950' 
+                      : 'bg-slate-850/50 text-slate-400'
+                    }`}
+                  >
+                    <CheckCircle2 size={20} />
+                  </div>
+                </button>
+              </div>
+            </Card>
+
+            {/* 4. Cuadro de Ruta / Timing (Itinerario) */}
+            <Card className="p-5 border-slate-850 bg-slate-900/50 text-left">
+              <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest block text-center mb-3">Itinerario y Puntos de Control</span>
+              
+              <div className="space-y-4 text-sm text-slate-300">
                 <div className="p-3 bg-slate-950 rounded-xl border border-slate-850 space-y-4">
                   
                   {/* Origen */}
@@ -397,65 +762,8 @@ export default function App() {
 
                 </div>
               </div>
-
-              {/* Large Route Navigation maps button */}
-              <div className="mt-4">
-                <a 
-                  href={`https://www.google.com/maps/dir/?api=1&origin=${encodeURIComponent(routeInfo.origin)}&destination=${encodeURIComponent(routeInfo.dest)}&waypoints=${encodeURIComponent((routeInfo.paradas || []).join('|'))}`} 
-                  target="_blank" 
-                  rel="noopener noreferrer" 
-                  className="w-full bg-emerald-600 hover:bg-emerald-500 text-slate-950 font-black py-3 px-4 rounded-lg flex items-center justify-center gap-2 transition-colors text-xs uppercase tracking-wider shadow-lg shadow-emerald-950/20"
-                >
-                  <MapIcon size={14}/> Iniciar Ruta en Google Maps
-                </a>
-              </div>
             </Card>
 
-            {/* Status Update Actions */}
-            <Card className="p-5 border-slate-850 bg-slate-900/50">
-              <span className="text-[10px] text-slate-500 uppercase font-black tracking-widest block text-center mb-3">Actualizar Estado de Viaje</span>
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-2.5">
-                <Button 
-                  variant="secondary" 
-                  className="w-full py-3" 
-                  onClick={() => updateStatus('COMENZADO')} 
-                  disabled={loading || routeInfo.status === 'COMENZADO' || routeInfo.status === 'FINALIZADO'}
-                  icon={Play}
-                >
-                  Comenzar Ruta
-                </Button>
-
-                <Button 
-                  variant="blue" 
-                  className="w-full py-3" 
-                  onClick={() => updateStatus('EN VIAJE')} 
-                  disabled={loading || routeInfo.status === 'EN VIAJE' || routeInfo.status === 'FINALIZADO'}
-                  icon={Truck}
-                >
-                  Iniciar Viaje
-                </Button>
-
-                <Button 
-                  variant="primary" 
-                  className="w-full py-3" 
-                  onClick={() => updateStatus('LLEGADO')} 
-                  disabled={loading || routeInfo.status === 'LLEGADO' || routeInfo.status === 'FINALIZADO'}
-                  icon={MapPin}
-                >
-                  ¡Llegué a Destino!
-                </Button>
-
-                <Button 
-                  variant="danger" 
-                  className="w-full py-3" 
-                  onClick={() => updateStatus('FINALIZADO')} 
-                  disabled={loading || routeInfo.status === 'FINALIZADO'}
-                  icon={CheckCircle2}
-                >
-                  Finalizar Ruta
-                </Button>
-              </div>
-            </Card>
           </div>
         )}
 
